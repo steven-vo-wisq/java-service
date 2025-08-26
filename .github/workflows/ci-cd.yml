@@ -33,3 +33,70 @@ jobs:
       run: |
         # For now just print a message
         echo "Docker image would be built here"
+
+    - name: Get project info
+      run: |
+        echo "PROJECT_NAME=slack-service" >> $GITHUB_ENV
+        echo "PROJECT_VERSION=$(grep -Po "version\s*=\s*'\K[^']+" build.gradle)" >> $GITHUB_ENV
+
+    - name: Grant execute permission for gradlew
+      run: chmod +x gradlew
+
+    - name: Build with Gradle
+      run: ./gradlew build -x test
+
+    - name: Generate API docs
+      run: |
+        mkdir -p build/openapi
+        ./gradlew clean compileJava
+        java -cp $(./gradlew -q printClasspath):build/classes/java/main \
+          org.springdoc.openapi.mavenplugin.OpenApiGenerator \
+          --output build/openapi/openapi.json \
+          --group com.example.javaservice.JavaServiceApplication
+
+        cp build/openapi/openapi.json ./openapi.json
+
+    - name: Generate HTML documentation
+      run: |
+        mkdir -p apidoc
+        npm install -g @redocly/cli@latest
+        redocly build-docs openapi.json -o apidoc/docs-${{ env.PROJECT_VERSION }}.html
+        cp openapi.json apidoc/docs-${{ env.PROJECT_VERSION }}.json
+
+    - name: Tag version
+      continue-on-error: false
+      uses: tvdias/github-tagger@v0.0.1
+      with:
+        repo-token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+        tag: ${{ env.PROJECT_VERSION }}
+      if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/hotfix') ) }}
+
+    - name: Checkout api-docs repository
+      uses: actions/checkout@v4
+      with:
+        repository: steven-vo-wisq/api-docs
+        token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+        path: api-docs
+
+    - name: Copy OpenAPI files into api-docs
+      run: |
+        mkdir -p api-docs/slack-service/main
+        cp -v openapi.json api-docs/slack-service/main/${{ env.PROJECT_VERSION }}.json
+        cp -v apidoc/docs-${{ env.PROJECT_VERSION }}.html api-docs/slack-service/main/${{ env.PROJECT_VERSION }}.html
+        
+        # Force copy to main.json and main.html (latest version)
+        cp -f openapi.json api-docs/slack-service/main/main.json
+        cp -f apidoc/docs-${{ env.PROJECT_VERSION }}.html api-docs/slack-service/main/main.html
+
+    - name: Commit changes to api-docs
+      working-directory: api-docs
+      env:
+        GIT_AUTHOR_NAME: "github-actions[bot]"
+        GIT_AUTHOR_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com"
+      run: |
+        git config user.name "$GIT_AUTHOR_NAME"
+        git config user.email "$GIT_AUTHOR_EMAIL"
+        git checkout main
+        git add .
+        git commit -m "chore(docs): update openapi from slack-service"
+        git push https://x-access-token:${{ secrets.PERSONAL_ACCESS_TOKEN }}@github.com/steven-vo-wisq/api-docs HEAD:main --force
