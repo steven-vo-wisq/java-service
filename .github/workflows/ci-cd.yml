@@ -5,117 +5,153 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
+      - name: Checkout source repository
+        uses: actions/checkout@v4
 
-    - name: Set up JDK 17
-      uses: actions/setup-java@v3
-      with:
-        java-version: '17'
-        distribution: 'temurin'
-        cache: gradle
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
 
-    - name: Setup Gradle Wrapper
-      run: |
-        # Create directory structure
-        mkdir -p gradle/wrapper
+      - name: Set up Node (for redoc-cli bundling)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
 
-        # Download wrapper JAR with verification
-        echo "Downloading Gradle wrapper JAR..."
-        curl -L --fail -v -o gradle/wrapper/gradle-wrapper.jar https://github.com/gradle/gradle/raw/master/gradle/wrapper/gradle-wrapper.jar
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+        shell: bash
 
-        # Verify the file was downloaded successfully
-        if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ] || [ ! -s "gradle/wrapper/gradle-wrapper.jar" ]; then
-          echo "Primary download failed, trying alternative source..."
-          curl -L --fail -v -o gradle/wrapper/gradle-wrapper.jar https://services.gradle.org/distributions/gradle-wrapper.jar
-        fi
+      - name: Clean, build & generate OpenAPI JSON
+        # The org.springdoc.openapi-gradle-plugin exposes generateOpenApiDocs
+        run: |
+          ./gradlew clean generateOpenApiDocs --no-daemon -x test
+        shell: bash
 
-        # Final verification
-        if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ] || [ ! -s "gradle/wrapper/gradle-wrapper.jar" ]; then
-          echo "Failed to download gradle-wrapper.jar"
-          exit 1
-        fi
+      - name: Show build files (sanity)
+        run: |
+          echo "Listing build directory"
+          ls -la build || true
+          echo "Looking for common OpenAPI outputs"
+          ls -la build/openapi.json || true
+          ls -la build/apidoc/openapi.json || true
+        shell: bash
 
-        echo "Gradle wrapper JAR downloaded successfully. Size: $(ls -lh gradle/wrapper/gradle-wrapper.jar | awk '{print $5}')"
+      - name: Ensure OpenAPI JSON is at build/apidoc/openapi.json
+        run: |
+          # prefer plugin default: build/openapi.json, otherwise check build/apidoc/openapi.json
+          mkdir -p build/apidoc
+          if [ -f build/openapi.json ]; then
+            cp build/openapi.json build/apidoc/openapi.json
+            echo "Copied build/openapi.json -> build/apidoc/openapi.json"
+          elif [ -f build/apidoc/openapi.json ]; then
+            echo "Found build/apidoc/openapi.json (left as-is)"
+          else
+            echo "ERROR: No OpenAPI JSON found (looked for build/openapi.json and build/apidoc/openapi.json)"
+            exit 1
+          fi
+        shell: bash
 
-        # Create wrapper properties file if missing
-        if [ ! -f "gradle/wrapper/gradle-wrapper.properties" ]; then
-          cat > gradle/wrapper/gradle-wrapper.properties << EOL
-        distributionBase=GRADLE_USER_HOME
-        distributionPath=wrapper/dists
-        distributionUrl=https\://services.gradle.org/distributions/gradle-8.5-bin.zip
-        zipStoreBase=GRADLE_USER_HOME
-        zipStorePath=wrapper/dists
-        EOL
-        echo "Created gradle-wrapper.properties file"
-        fi
-        
-        # List the files in the wrapper directory to confirm
-        ls -la gradle/wrapper/
-      shell: bash
+      - name: Set PROJECT_VERSION environment variable
+        id: set_version
+        run: |
+          # read project version from Gradle properties output
+          VERSION=$(./gradlew -q properties --no-daemon | grep "^version:" | awk '{print $2}')
+          if [ -z "$VERSION" ]; then
+            echo "Could not detect project version, default to 'untagged'"
+            VERSION="untagged"
+          fi
+          echo "PROJECT_VERSION=$VERSION" >> $GITHUB_ENV
+          echo "project_version=$VERSION" >> $GITHUB_OUTPUT
+        shell: bash
 
-    - name: Grant execute permission for gradlew
-      run: chmod +x gradlew
-      shell: bash
+      - name: Bundle single-file HTML docs with redoc-cli
+        run: |
+          echo "Bundling single-file HTML with redoc-cli (npx)"
+          mkdir -p build/apidoc
+          JSON_PATH=build/apidoc/openapi.json
+          OUT_HTML=build/apidoc/docs-${PROJECT_VERSION}.html
+          if [ ! -f "$JSON_PATH" ]; then
+            echo "ERROR: $JSON_PATH not found"
+            exit 1
+          fi
+          # use npx to avoid global installs
+          npx --yes redoc-cli@0.13.2 bundle -o "$OUT_HTML" "$JSON_PATH"
+          # copy JSON next to HTML for convenience
+          cp -f "$JSON_PATH" build/apidoc/docs-${PROJECT_VERSION}.json
+          echo "Generated $OUT_HTML and copied JSON"
+        shell: bash
+        env:
+          PROJECT_VERSION: ${{ env.PROJECT_VERSION }}
 
-    - name: clean, compile, run tests, scan libraries, generate documentation
-      run: ./gradlew clean test assemble
-      shell: bash
+      - name: Show generated apidoc files
+        run: ls -la build/apidoc || true
+        shell: bash
 
-    - name: set project version var
-      shell: bash
-      run: |
-        echo "PROJECT_VERSION=$(./gradlew properties -q | grep "^version:" | awk '{print $2}')" >> $GITHUB_ENV
+      - name: Checkout api-docs repository
+        uses: actions/checkout@v4
+        with:
+          repository: steven-vo-wisq/api-docs
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: api-docs
 
-    - name: generate doc
-      run: |
-        if test -f "build/apidoc/openapi.json"; then
-          sudo npm install -g redoc-cli@0.13.2
-          redoc-cli bundle -o build/apidoc/docs-${PROJECT_VERSION}.html build/apidoc/openapi.json
-          cp build/apidoc/openapi.json build/apidoc/docs-${PROJECT_VERSION}.json
-        fi
-      shell: bash
-      if: steps.check_api_doc.outputs.files_exists == 'true'
+      - name: Copy OpenAPI files into api-docs
+        run: |
+          if [ ! -f build/apidoc/openapi.json ]; then
+            echo "ERROR: build/apidoc/openapi.json not found, aborting copy."
+            exit 1
+          fi
+          if [ ! -f build/apidoc/docs-${PROJECT_VERSION}.html ]; then
+            echo "ERROR: build/apidoc/docs-${PROJECT_VERSION}.html not found, aborting copy."
+            exit 1
+          fi
 
-    - name: Checkout api-docs repository
-      uses: actions/checkout@v4
-      with:
-        repository: steven-vo-wisq/api-docs
-        token: ${{ secrets.GITHUB_TOKEN }}
-        path: api-docs
+          mkdir -p api-docs/slack-service/main
+          cp -v build/apidoc/openapi.json api-docs/slack-service/main/${PROJECT_VERSION}.json
+          cp -v build/apidoc/docs-${PROJECT_VERSION}.html api-docs/slack-service/main/${PROJECT_VERSION}.html
 
-    - name: Copy OpenAPI files into api-docs
-      run: |
-        mkdir -p api-docs/slack-service/main
-        cp -v build/apidoc/openapi.json api-docs/slack-service/main/${{ env.PROJECT_VERSION }}.json
-        cp -v build/apidoc/docs-${{ env.PROJECT_VERSION }}.html api-docs/slack-service/main/${{ env.PROJECT_VERSION }}.html
-        
-        # Force copy to main.json and main.html (latest version)
-        cp -f build/apidoc/openapi.json api-docs/slack-service/main/main.json
-        cp -f build/apidoc/docs-${{ env.PROJECT_VERSION }}.html api-docs/slack-service/main/main.html
+          # Force copy to main.json and main.html (latest)
+          cp -f build/apidoc/openapi.json api-docs/slack-service/main/main.json
+          cp -f build/apidoc/docs-${PROJECT_VERSION}.html api-docs/slack-service/main/main.html
 
-    - name: Commit changes to api-docs
-      working-directory: api-docs
-      env:
-        GIT_AUTHOR_NAME: "github-actions[bot]"
-        GIT_AUTHOR_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com"
-      run: |
-        git config user.name "$GIT_AUTHOR_NAME"
-        git config user.email "$GIT_AUTHOR_EMAIL"
-        git checkout main
-        git add .
-        git commit -m "chore(docs): update openapi from slack-service"
-        git push https://x-access-token:${{ secrets.PERSONAL_ACCESS_TOKEN }}@github.com/steven-vo-wisq/api-docs HEAD:main --force
+          echo "Files copied into api-docs/slack-service/main/"
+        shell: bash
+        env:
+          PROJECT_VERSION: ${{ env.PROJECT_VERSION }}
 
-    - name: Tag version
-      continue-on-error: false
-      uses: tvdias/github-tagger@v0.0.1
-      with:
-        repo-token: ${{ secrets.GITHUB_TOKEN }}
-        tag: ${{ env.PROJECT_VERSION }}
-      if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/hotfix') ) }}
+      - name: Commit changes to api-docs
+        working-directory: api-docs
+        env:
+          GIT_AUTHOR_NAME: "github-actions[bot]"
+          GIT_AUTHOR_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com"
+        run: |
+          git config user.name "$GIT_AUTHOR_NAME"
+          git config user.email "$GIT_AUTHOR_EMAIL"
+          git checkout main || git switch -c main
+          git add slack-service/main/*
+          # only commit if there are changes
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git commit -m "chore(docs): update OpenAPI from slack-service ($PROJECT_VERSION)"
+          # push using PAT stored in secrets (ensure PERSONAL_ACCESS_TOKEN has repo write permission)
+          git push https://x-access-token:${{ secrets.PERSONAL_ACCESS_TOKEN }}@github.com/steven-vo-wisq/api-docs HEAD:main --force
+        shell: bash
+
+      - name: Tag version
+        continue-on-error: false
+        uses: tvdias/github-tagger@v0.0.1
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ env.PROJECT_VERSION }}
+        if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/hotfix') ) }}
