@@ -22,16 +22,41 @@ jobs:
 
     - name: Setup Gradle Wrapper
       run: |
+        # Create directory structure
         mkdir -p gradle/wrapper
-        curl -o gradle/wrapper/gradle-wrapper.jar https://github.com/gradle/gradle/raw/master/gradle/wrapper/gradle-wrapper.jar
 
-        if [ ! -f "gradle/wrapper/gradle-wrapper.properties" ]; then
-          echo "distributionBase=GRADLE_USER_HOME" > gradle/wrapper/gradle-wrapper.properties
-          echo "distributionPath=wrapper/dists" >> gradle/wrapper/gradle-wrapper.properties
-          echo "distributionUrl=https\://services.gradle.org/distributions/gradle-8.5-bin.zip" >> gradle/wrapper/gradle-wrapper.properties
-          echo "zipStoreBase=GRADLE_USER_HOME" >> gradle/wrapper/gradle-wrapper.properties
-          echo "zipStorePath=wrapper/dists" >> gradle/wrapper/gradle-wrapper.properties
+        # Download wrapper JAR with verification
+        echo "Downloading Gradle wrapper JAR..."
+        curl -L --fail -v -o gradle/wrapper/gradle-wrapper.jar https://github.com/gradle/gradle/raw/master/gradle/wrapper/gradle-wrapper.jar
+
+        # Verify the file was downloaded successfully
+        if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ] || [ ! -s "gradle/wrapper/gradle-wrapper.jar" ]; then
+          echo "Primary download failed, trying alternative source..."
+          curl -L --fail -v -o gradle/wrapper/gradle-wrapper.jar https://services.gradle.org/distributions/gradle-wrapper.jar
         fi
+
+        # Final verification
+        if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ] || [ ! -s "gradle/wrapper/gradle-wrapper.jar" ]; then
+          echo "Failed to download gradle-wrapper.jar"
+          exit 1
+        fi
+
+        echo "Gradle wrapper JAR downloaded successfully. Size: $(ls -lh gradle/wrapper/gradle-wrapper.jar | awk '{print $5}')"
+
+        # Create wrapper properties file if missing
+        if [ ! -f "gradle/wrapper/gradle-wrapper.properties" ]; then
+          cat > gradle/wrapper/gradle-wrapper.properties << EOL
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          distributionUrl=https\://services.gradle.org/distributions/gradle-8.5-bin.zip
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          EOL
+          echo "Created gradle-wrapper.properties file"
+        fi
+
+      # List the files in the wrapper directory to confirm
+        ls -la gradle/wrapper/
       shell: bash
 
     - name: Grant execute permission for gradlew
