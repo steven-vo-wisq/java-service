@@ -1,157 +1,153 @@
-name: Java Service CI/CD
+name: Generate OpenAPI JSON + HTML
 
 on:
+  workflow_dispatch:
   push:
     branches: [ main ]
-  pull_request:
-    branches: [ main ]
-  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  JAVA_VERSION: '17'
+  OPENAPI_JSON_CANDIDATES: |
+    build/openapi.json
+    build/apidoc/openapi.json
+  HTML_OUT_DIR: build/openapi-html
+  OPENAPI_GENERATOR_IMAGE: openapitools/openapi-generator-cli:v7.0.0
 
 jobs:
-  build:
+  gen-openapi:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout source repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Ensure Gradle wrapper JAR & properties (if repository doesn't include them)
+        shell: bash
+        run: |
+          mkdir -p gradle/wrapper
+          # Only fetch wrapper jar if missing
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ] || [ ! -s gradle/wrapper/gradle-wrapper.jar ]; then
+            echo "gradle-wrapper.jar missing — attempting download..."
+            curl -fsSL -o gradle/wrapper/gradle-wrapper.jar https://github.com/gradle/gradle/raw/master/gradle/wrapper/gradle-wrapper.jar || true
+            if [ ! -f gradle/wrapper/gradle-wrapper.jar ] || [ ! -s gradle/wrapper/gradle-wrapper.jar ]; then
+              curl -fsSL -o gradle/wrapper/gradle-wrapper.jar https://services.gradle.org/distributions/gradle-wrapper.jar || true
+            fi
+          else
+            echo "gradle-wrapper.jar present"
+          fi
+
+          # Create wrapper properties if missing (pin to Gradle 8.5 - change if you need another version)
+          if [ ! -f gradle/wrapper/gradle-wrapper.properties ]; then
+            cat > gradle/wrapper/gradle-wrapper.properties <<'EOF'
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          distributionUrl=https\://services.gradle.org/distributions/gradle-8.5-bin.zip
+          EOF
+          echo "Created gradle/wrapper/gradle-wrapper.properties"
+          fi
+          
+          ls -la gradle/wrapper || true
+
+      - name: Set up JDK
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: ${{ env.JAVA_VERSION }}
           cache: gradle
 
-      - name: Set up Node (for redoc-cli bundling)
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-
-      - name: Make gradlew executable
-        run: chmod +x ./gradlew
+      - name: Make gradlew executable (if present)
         shell: bash
-
-      - name: Clean, build & generate OpenAPI JSON
-        # The org.springdoc.openapi-gradle-plugin exposes generateOpenApiDocs
         run: |
-          ./gradlew clean generateOpenApiDocs --no-daemon -x test
-        shell: bash
-
-      - name: Show build files (sanity)
-        run: |
-          echo "Listing build directory"
-          ls -la build || true
-          echo "Looking for common OpenAPI outputs"
-          ls -la build/openapi.json || true
-          ls -la build/apidoc/openapi.json || true
-        shell: bash
-
-      - name: Ensure OpenAPI JSON is at build/apidoc/openapi.json
-        run: |
-          # prefer plugin default: build/openapi.json, otherwise check build/apidoc/openapi.json
-          mkdir -p build/apidoc
-          if [ -f build/openapi.json ]; then
-            cp build/openapi.json build/apidoc/openapi.json
-            echo "Copied build/openapi.json -> build/apidoc/openapi.json"
-          elif [ -f build/apidoc/openapi.json ]; then
-            echo "Found build/apidoc/openapi.json (left as-is)"
+          if [ -f ./gradlew ]; then
+            chmod +x ./gradlew
           else
-            echo "ERROR: No OpenAPI JSON found (looked for build/openapi.json and build/apidoc/openapi.json)"
+            echo "Warning: ./gradlew not found — workflow will attempt to use system 'gradle' if available."
+          fi
+
+      - name: Clean & generate OpenAPI JSON
+        shell: bash
+        run: |
+          # Prefer using the repository's wrapper if available, otherwise fallback to system gradle
+          if [ -f ./gradlew ]; then
+            echo "Using project gradlew"
+            ./gradlew clean generateOpenApiDocs --no-daemon -x test
+          elif command -v gradle >/dev/null 2>&1; then
+            echo "Using system gradle"
+            gradle clean generateOpenApiDocs -x test
+          else
+            echo "ERROR: No gradlew script and no system gradle available. Please commit Gradle wrapper to repo."
             exit 1
           fi
-        shell: bash
 
-      - name: Set PROJECT_VERSION environment variable
-        id: set_version
-        run: |
-          # read project version from Gradle properties output
-          VERSION=$(./gradlew -q properties --no-daemon | grep "^version:" | awk '{print $2}')
-          if [ -z "$VERSION" ]; then
-            echo "Could not detect project version, default to 'untagged'"
-            VERSION="untagged"
-          fi
-          echo "PROJECT_VERSION=$VERSION" >> $GITHUB_ENV
-          echo "project_version=$VERSION" >> $GITHUB_OUTPUT
+      - name: Locate OpenAPI JSON
+        id: locate_json
         shell: bash
-
-      - name: Bundle single-file HTML docs with redoc-cli
         run: |
-          echo "Bundling single-file HTML with redoc-cli (npx)"
-          mkdir -p build/apidoc
-          JSON_PATH=build/apidoc/openapi.json
-          OUT_HTML=build/apidoc/docs-${PROJECT_VERSION}.html
-          if [ ! -f "$JSON_PATH" ]; then
-            echo "ERROR: $JSON_PATH not found"
+          # Try candidate paths in order
+          FOUND=""
+          for p in ${OPENAPI_JSON_CANDIDATES}; do
+            if [ -f "$p" ]; then
+              FOUND="$p"
+              break
+            fi
+          done
+          
+          # If found, copy to a stable path build/openapi.json
+          if [ -n "$FOUND" ]; then
+            mkdir -p build/apidoc
+            cp -f "$FOUND" build/apidoc/openapi.json
+            echo "found=$FOUND" >> $GITHUB_OUTPUT
+            echo "copied_to=build/apidoc/openapi.json" >> $GITHUB_OUTPUT
+            echo "OK: OpenAPI JSON found at $FOUND"
+          else
+            echo "ERROR: No OpenAPI JSON found. Checked:"
+            for p in ${OPENAPI_JSON_CANDIDATES}; do echo "  - $p"; done
+            ls -la build || true
             exit 1
           fi
-          # use npx to avoid global installs
-          npx --yes redoc-cli@0.13.2 bundle -o "$OUT_HTML" "$JSON_PATH"
-          # copy JSON next to HTML for convenience
-          cp -f "$JSON_PATH" build/apidoc/docs-${PROJECT_VERSION}.json
-          echo "Generated $OUT_HTML and copied JSON"
+
+      - name: Show JSON (sanity)
         shell: bash
-        env:
-          PROJECT_VERSION: ${{ env.PROJECT_VERSION }}
-
-      - name: Show generated apidoc files
-        run: ls -la build/apidoc || true
-        shell: bash
-
-      - name: Checkout api-docs repository
-        uses: actions/checkout@v4
-        with:
-          repository: steven-vo-wisq/api-docs
-          token: ${{ secrets.GITHUB_TOKEN }}
-          path: api-docs
-
-      - name: Copy OpenAPI files into api-docs
         run: |
+          echo "OpenAPI JSON list:"
+          ls -la build/apidoc/openapi.json || true
+          echo "Head (40 lines):"
+          head -n 40 build/apidoc/openapi.json || true
+
+      - name: Generate static HTML docs using OpenAPI Generator (Docker)
+        shell: bash
+        run: |
+          INPUT=/local/build/apidoc/openapi.json
+          OUTPUT=/local/${HTML_OUT_DIR}
+          mkdir -p ${HTML_OUT_DIR}
+          
           if [ ! -f build/apidoc/openapi.json ]; then
-            echo "ERROR: build/apidoc/openapi.json not found, aborting copy."
+            echo "ERROR: $INPUT not found"
             exit 1
           fi
-          if [ ! -f build/apidoc/docs-${PROJECT_VERSION}.html ]; then
-            echo "ERROR: build/apidoc/docs-${PROJECT_VERSION}.html not found, aborting copy."
-            exit 1
-          fi
+          
+          echo "Running OpenAPI Generator Docker image $OPENAPI_GENERATOR_IMAGE ..."
+          docker run --rm -v "${{ github.workspace }}:/local" ${OPENAPI_GENERATOR_IMAGE} generate \
+            -g html \
+            -i ${INPUT} \
+            -o ${OUTPUT} \
+            || ( echo "openapi-generator failed"; ls -la ${HTML_OUT_DIR}; exit 1 )
 
-          mkdir -p api-docs/slack-service/main
-          cp -v build/apidoc/openapi.json api-docs/slack-service/main/${PROJECT_VERSION}.json
-          cp -v build/apidoc/docs-${PROJECT_VERSION}.html api-docs/slack-service/main/${PROJECT_VERSION}.html
-
-          # Force copy to main.json and main.html (latest)
-          cp -f build/apidoc/openapi.json api-docs/slack-service/main/main.json
-          cp -f build/apidoc/docs-${PROJECT_VERSION}.html api-docs/slack-service/main/main.html
-
-          echo "Files copied into api-docs/slack-service/main/"
+      - name: Show generated HTML
         shell: bash
-        env:
-          PROJECT_VERSION: ${{ env.PROJECT_VERSION }}
-
-      - name: Commit changes to api-docs
-        working-directory: api-docs
-        env:
-          GIT_AUTHOR_NAME: "github-actions[bot]"
-          GIT_AUTHOR_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com"
         run: |
-          git config user.name "$GIT_AUTHOR_NAME"
-          git config user.email "$GIT_AUTHOR_EMAIL"
-          git checkout main || git switch -c main
-          git add slack-service/main/*
-          # only commit if there are changes
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
-            exit 0
-          fi
-          git commit -m "chore(docs): update OpenAPI from slack-service ($PROJECT_VERSION)"
-          # push using PAT stored in secrets (ensure PERSONAL_ACCESS_TOKEN has repo write permission)
-          git push https://x-access-token:${{ secrets.PERSONAL_ACCESS_TOKEN }}@github.com/steven-vo-wisq/api-docs HEAD:main --force
-        shell: bash
+          echo "HTML output:"
+          ls -la ${HTML_OUT_DIR} || true
 
-      - name: Tag version
-        continue-on-error: false
-        uses: tvdias/github-tagger@v0.0.1
+      - name: Upload artifacts (openapi.json + html)
+        uses: actions/upload-artifact@v4
         with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-          tag: ${{ env.PROJECT_VERSION }}
-        if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/hotfix') ) }}
+          name: openapi-artifacts
+          path: |
+            build/apidoc/openapi.json
+            ${HTML_OUT_DIR}
