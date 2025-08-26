@@ -20,19 +20,23 @@ jobs:
         distribution: 'temurin'
         cache: gradle
 
+    - name: Setup Gradle Wrapper
+      run: |
+        mkdir -p gradle/wrapper
+        curl -o gradle/wrapper/gradle-wrapper.jar https://github.com/gradle/gradle/raw/master/gradle/wrapper/gradle-wrapper.jar
+
+        if [ ! -f "gradle/wrapper/gradle-wrapper.properties" ]; then
+          echo "distributionBase=GRADLE_USER_HOME" > gradle/wrapper/gradle-wrapper.properties
+          echo "distributionPath=wrapper/dists" >> gradle/wrapper/gradle-wrapper.properties
+          echo "distributionUrl=https\://services.gradle.org/distributions/gradle-8.5-bin.zip" >> gradle/wrapper/gradle-wrapper.properties
+          echo "zipStoreBase=GRADLE_USER_HOME" >> gradle/wrapper/gradle-wrapper.properties
+          echo "zipStorePath=wrapper/dists" >> gradle/wrapper/gradle-wrapper.properties
+        fi
+      shell: bash
+
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
       shell: bash
-
-    - name: gradle caching
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.gradle/caches
-          ~/.gradle/wrapper
-        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-        restore-keys: |
-          ${{ runner.os }}-gradle-
 
     - name: clean, compile, run tests, scan libraries, generate documentation
       run: ./gradlew clean test assemble
