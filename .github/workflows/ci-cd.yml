@@ -22,49 +22,26 @@ jobs:
 
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
+      shell: bash
 
-    - name: Build with Gradle
-      run: ./gradlew build
+    - name: clean, compile, run tests, scan libraries, generate documentation
+      run: ./gradlew clean test assemble
+      shell: bash
 
-    - name: Run tests
-      run: ./gradlew test
-
-    - name: Build Docker image
+    - name: set project version var
+      shell: bash
       run: |
-        # For now just print a message
-        echo "Docker image would be built here"
+        echo "PROJECT_VERSION=$(./gradlew properties -q | grep "^version:" | awk '{print $2}')" >> $GITHUB_ENV
 
-    - name: Get project info
+    - name: generate doc
       run: |
-        echo "PROJECT_NAME=slack-service" >> $GITHUB_ENV
-        echo "PROJECT_VERSION=$(grep -Po "version\s*=\s*'\K[^']+" build.gradle)" >> $GITHUB_ENV
-
-    - name: Grant execute permission for gradlew
-      run: chmod +x gradlew
-
-    - name: Build with Gradle
-      run: ./gradlew build -x test
-
-    - name: Generate API docs
-      run: ./gradlew generateOpenApiDocs
-
-    - name: Copy OpenAPI spec
-      run: cp build/docs/openapi.json ./openapi.json
-
-    - name: Generate HTML documentation
-      run: |
-        mkdir -p apidoc
-        npm install -g @redocly/cli@latest
-        redocly build-docs openapi.json -o apidoc/docs-${{ env.PROJECT_VERSION }}.html
-        cp openapi.json apidoc/docs-${{ env.PROJECT_VERSION }}.json
-
-    - name: Tag version
-      continue-on-error: false
-      uses: tvdias/github-tagger@v0.0.1
-      with:
-        repo-token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-        tag: ${{ env.PROJECT_VERSION }}
-      if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/hotfix') ) }}
+        if test -f "build/apidoc/openapi.json"; then
+          sudo npm install -g redoc-cli@0.13.2
+          redoc-cli bundle -o build/apidoc/docs-${PROJECT_VERSION}.html build/apidoc/openapi.json
+          cp build/apidoc/openapi.json build/apidoc/docs-${PROJECT_VERSION}.json
+        fi
+      shell: bash
+      if: steps.check_api_doc.outputs.files_exists == 'true'
 
     - name: Checkout api-docs repository
       uses: actions/checkout@v4
@@ -76,12 +53,12 @@ jobs:
     - name: Copy OpenAPI files into api-docs
       run: |
         mkdir -p api-docs/slack-service/main
-        cp -v openapi.json api-docs/slack-service/main/${{ env.PROJECT_VERSION }}.json
-        cp -v apidoc/docs-${{ env.PROJECT_VERSION }}.html api-docs/slack-service/main/${{ env.PROJECT_VERSION }}.html
+        cp -v build/apidoc/openapi.json api-docs/slack-service/main/${{ env.PROJECT_VERSION }}.json
+        cp -v build/apidoc/docs-${{ PROJECT_VERSION }}.html api-docs/slack-service/main/${{ env.PROJECT_VERSION }}.html
         
         # Force copy to main.json and main.html (latest version)
-        cp -f openapi.json api-docs/slack-service/main/main.json
-        cp -f apidoc/docs-${{ env.PROJECT_VERSION }}.html api-docs/slack-service/main/main.html
+        cp -f build/apidoc/openapi.json api-docs/slack-service/main/main.json
+        cp -f build/apidoc/docs-${{ PROJECT_VERSION }}.html api-docs/slack-service/main/main.html
 
     - name: Commit changes to api-docs
       working-directory: api-docs
@@ -95,3 +72,11 @@ jobs:
         git add .
         git commit -m "chore(docs): update openapi from slack-service"
         git push https://x-access-token:${{ secrets.PERSONAL_ACCESS_TOKEN }}@github.com/steven-vo-wisq/api-docs HEAD:main --force
+
+    - name: Tag version
+      continue-on-error: false
+      uses: tvdias/github-tagger@v0.0.1
+      with:
+        repo-token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+        tag: ${{ env.PROJECT_VERSION }}
+      if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/hotfix') ) }}

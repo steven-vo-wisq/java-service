@@ -8,13 +8,6 @@ group = 'com.example'
 version = '0.0.1-SNAPSHOT'
 sourceCompatibility = '17'
 
-openApi {
-    outputDir = file("${buildDir}/docs")
-    outputFileName = 'openapi.json'
-    apiDocsUrl = 'http://localhost:8080/v3/api-docs'
-    waitTimeInSeconds = 10
-}
-
 repositories {
     mavenCentral()
 }
