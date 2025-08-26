@@ -54,11 +54,11 @@ jobs:
       run: |
         mkdir -p api-docs/slack-service/main
         cp -v build/apidoc/openapi.json api-docs/slack-service/main/${{ env.PROJECT_VERSION }}.json
-        cp -v build/apidoc/docs-${{ PROJECT_VERSION }}.html api-docs/slack-service/main/${{ env.PROJECT_VERSION }}.html
+        cp -v build/apidoc/docs-${{ env.PROJECT_VERSION }}.html api-docs/slack-service/main/${{ env.PROJECT_VERSION }}.html
         
         # Force copy to main.json and main.html (latest version)
         cp -f build/apidoc/openapi.json api-docs/slack-service/main/main.json
-        cp -f build/apidoc/docs-${{ PROJECT_VERSION }}.html api-docs/slack-service/main/main.html
+        cp -f build/apidoc/docs-${{ env.PROJECT_VERSION }}.html api-docs/slack-service/main/main.html
 
     - name: Commit changes to api-docs
       working-directory: api-docs
