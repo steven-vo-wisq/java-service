@@ -62,12 +62,6 @@ jobs:
           tag: ${{ env.PROJECT_VERSION }}
         if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/hotfix') ) }}
 
-      - name: Check for existence of api docs
-        id: check_api_doc
-        uses: andstor/file-existence-action@v3
-        with:
-          files: "build/apidoc"
-
       - name: generate doc
         run: |
           if test -f "build/apidoc/openapi.json"; then
