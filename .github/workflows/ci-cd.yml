@@ -26,12 +26,6 @@ jobs:
           name: Slack-Service
           github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
 
-      - name: set env var
-        id: set-env-var
-        run: |
-          echo "SERVICE_NAME=$(grep wisq.authorization.permissions.service src/main/resources/application.properties | cut -d '=' -f 2)" >> $GITHUB_ENV
-          echo PROJECT_VERSION=${{ env.PROJECT_VERSION }} >> $GITHUB_OUTPUT
-
       - name: Set up JDK 11 if 17 is not specified
         if: ${{ inputs.java_version == '' || inputs.java_version != '17' }}
         uses: actions/setup-java@v4
@@ -95,7 +89,7 @@ jobs:
           if test -f "build/apidoc/openapi.json"; then
             sudo npm install -g redoc-cli@0.13.2
             redoc-cli bundle -o build/apidoc/docs-${{PROJECT_VERSION}}.html build/apidoc/openapi.json
-            cp build/apidoc/openapi.json build/apidoc/docs-${PROJECT_VERSION}.json
+            cp build/apidoc/openapi.json build/apidoc/docs-${{PROJECT_VERSION}}.json
           fi
         shell: bash
         if: steps.check_api_doc.outputs.files_exists == 'true'
