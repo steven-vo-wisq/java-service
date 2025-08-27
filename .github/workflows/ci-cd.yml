@@ -88,8 +88,8 @@ jobs:
         run: |
           if test -f "build/apidoc/openapi.json"; then
             sudo npm install -g redoc-cli@0.13.2
-            redoc-cli bundle -o build/apidoc/docs-${{PROJECT_VERSION}}.html build/apidoc/openapi.json
-            cp build/apidoc/openapi.json build/apidoc/docs-${{PROJECT_VERSION}}.json
+            redoc-cli bundle -o build/apidoc/docs-${{env.PROJECT_VERSION}}.html build/apidoc/openapi.json
+            cp build/apidoc/openapi.json build/apidoc/docs-${{env.PROJECT_VERSION}}.json
           fi
         shell: bash
         if: steps.check_api_doc.outputs.files_exists == 'true'
