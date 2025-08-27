@@ -1,153 +1,110 @@
-name: Generate OpenAPI JSON + HTML
-
 on:
-  workflow_dispatch:
   push:
-    branches: [ main ]
-
-permissions:
-  contents: read
-
-env:
-  JAVA_VERSION: '17'
-  OPENAPI_JSON_CANDIDATES: |
-    build/openapi.json
-    build/apidoc/openapi.json
-  HTML_OUT_DIR: build/openapi-html
-  OPENAPI_GENERATOR_IMAGE: openapitools/openapi-generator-cli:v7.0.0
+    branches: [ main, feature/*, bugfix/*, task/*, PROD-* ]
 
 jobs:
-  gen-openapi:
+  build:
     runs-on: ubuntu-latest
-
+    outputs:
+      newServiceVersion: ${{ steps.set-env-var.outputs.PROJECT_VERSION }}
     steps:
-      - name: Checkout repository
+      - name: Check out the main repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Ensure Gradle wrapper JAR & properties (if repository doesn't include them)
-        shell: bash
+      - name: Check out the build script
+        uses: actions/checkout@v4
+        with:
+          repository: hausinc-net/main-branch-action
+          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          path: .github/do_build
+
+      - name: Do the build
+        uses: ./.github/do_build
+        with:
+          name: Slack-Service
+          github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+
+      - name: set env var
+        id: set-env-var
         run: |
-          mkdir -p gradle/wrapper
-          # Only fetch wrapper jar if missing
-          if [ ! -f gradle/wrapper/gradle-wrapper.jar ] || [ ! -s gradle/wrapper/gradle-wrapper.jar ]; then
-            echo "gradle-wrapper.jar missing — attempting download..."
-            curl -fsSL -o gradle/wrapper/gradle-wrapper.jar https://github.com/gradle/gradle/raw/master/gradle/wrapper/gradle-wrapper.jar || true
-            if [ ! -f gradle/wrapper/gradle-wrapper.jar ] || [ ! -s gradle/wrapper/gradle-wrapper.jar ]; then
-              curl -fsSL -o gradle/wrapper/gradle-wrapper.jar https://services.gradle.org/distributions/gradle-wrapper.jar || true
-            fi
-          else
-            echo "gradle-wrapper.jar present"
-          fi
+          echo "SERVICE_NAME=$(grep wisq.authorization.permissions.service src/main/resources/application.properties | cut -d '=' -f 2)" >> $GITHUB_ENV
+          echo PROJECT_VERSION=${{ env.PROJECT_VERSION }} >> $GITHUB_OUTPUT
 
-          # Create wrapper properties if missing (pin to Gradle 8.5 - change if you need another version)
-          if [ ! -f gradle/wrapper/gradle-wrapper.properties ]; then
-            cat > gradle/wrapper/gradle-wrapper.properties <<'EOF'
-          distributionBase=GRADLE_USER_HOME
-          distributionPath=wrapper/dists
-          zipStoreBase=GRADLE_USER_HOME
-          zipStorePath=wrapper/dists
-          distributionUrl=https\://services.gradle.org/distributions/gradle-8.5-bin.zip
-          EOF
-          echo "Created gradle/wrapper/gradle-wrapper.properties"
-          fi
-          
-          ls -la gradle/wrapper || true
-
-      - name: Set up JDK
+      - name: Set up JDK 11 if 17 is not specified
+        if: ${{ inputs.java_version == '' || inputs.java_version != '17' }}
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
-          cache: gradle
+          java-version: '11'
+          distribution: 'adopt'
 
-      - name: Make gradlew executable (if present)
-        shell: bash
-        run: |
-          if [ -f ./gradlew ]; then
-            chmod +x ./gradlew
-          else
-            echo "Warning: ./gradlew not found — workflow will attempt to use system 'gradle' if available."
-          fi
-
-      - name: Clean & generate OpenAPI JSON
-        shell: bash
-        run: |
-          # Prefer using the repository's wrapper if available, otherwise fallback to system gradle
-          if [ -f ./gradlew ]; then
-            echo "Using project gradlew"
-            ./gradlew clean generateOpenApiDocs --no-daemon -x test
-          elif command -v gradle >/dev/null 2>&1; then
-            echo "Using system gradle"
-            gradle clean generateOpenApiDocs -x test
-          else
-            echo "ERROR: No gradlew script and no system gradle available. Please commit Gradle wrapper to repo."
-            exit 1
-          fi
-
-      - name: Locate OpenAPI JSON
-        id: locate_json
-        shell: bash
-        run: |
-          # Try candidate paths in order
-          FOUND=""
-          for p in ${OPENAPI_JSON_CANDIDATES}; do
-            if [ -f "$p" ]; then
-              FOUND="$p"
-              break
-            fi
-          done
-          
-          # If found, copy to a stable path build/openapi.json
-          if [ -n "$FOUND" ]; then
-            mkdir -p build/apidoc
-            cp -f "$FOUND" build/apidoc/openapi.json
-            echo "found=$FOUND" >> $GITHUB_OUTPUT
-            echo "copied_to=build/apidoc/openapi.json" >> $GITHUB_OUTPUT
-            echo "OK: OpenAPI JSON found at $FOUND"
-          else
-            echo "ERROR: No OpenAPI JSON found. Checked:"
-            for p in ${OPENAPI_JSON_CANDIDATES}; do echo "  - $p"; done
-            ls -la build || true
-            exit 1
-          fi
-
-      - name: Show JSON (sanity)
-        shell: bash
-        run: |
-          echo "OpenAPI JSON list:"
-          ls -la build/apidoc/openapi.json || true
-          echo "Head (40 lines):"
-          head -n 40 build/apidoc/openapi.json || true
-
-      - name: Generate static HTML docs using OpenAPI Generator (Docker)
-        shell: bash
-        run: |
-          INPUT=/local/build/apidoc/openapi.json
-          OUTPUT=/local/${HTML_OUT_DIR}
-          mkdir -p ${HTML_OUT_DIR}
-          
-          if [ ! -f build/apidoc/openapi.json ]; then
-            echo "ERROR: $INPUT not found"
-            exit 1
-          fi
-          
-          echo "Running OpenAPI Generator Docker image $OPENAPI_GENERATOR_IMAGE ..."
-          docker run --rm -v "${{ github.workspace }}:/local" ${OPENAPI_GENERATOR_IMAGE} generate \
-            -g html \
-            -i ${INPUT} \
-            -o ${OUTPUT} \
-            || ( echo "openapi-generator failed"; ls -la ${HTML_OUT_DIR}; exit 1 )
-
-      - name: Show generated HTML
-        shell: bash
-        run: |
-          echo "HTML output:"
-          ls -la ${HTML_OUT_DIR} || true
-
-      - name: Upload artifacts (openapi.json + html)
-        uses: actions/upload-artifact@v4
+      - name: Set up JDK 17 if specified
+        if: ${{ inputs.java_version == '17' }}
+        uses: actions/setup-java@v4
         with:
-          name: openapi-artifacts
+          java-version: '17'
+          distribution: 'adopt'
+
+      - name: Set up Docker Buildx
+        id: buildx
+        if: ${{ github.ref == 'refs/heads/main' }}
+        uses: docker/setup-buildx-action@v3
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+        shell: bash
+
+      - name: gradle caching
+        uses: actions/cache@v4
+        with:
           path: |
-            build/apidoc/openapi.json
-            ${HTML_OUT_DIR}
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: clean, compile, run tests, scan libraries, generate documentation
+        run: ./gradlew clean test assemble
+        shell: bash
+
+      - name: set project version var
+        shell: bash
+        run: |
+          echo "PROJECT_VERSION=$(./gradlew properties -q | grep "^version:" | awk '{print $2}')" >> $GITHUB_ENV
+
+      # Create git tag when merged to main OR to a branch prefixed with 'hotfix'
+      - name: tag
+        # fail the build when trying to publish duplicate tag
+        continue-on-error: false
+        uses: tvdias/github-tagger@v0.0.1
+        with:
+          repo-token: ${{ inputs.github_token }}
+          tag: ${{env.PROJECT_VERSION}}
+        if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/hotfix') ) }}
+
+      - name: Check for existence of api docs
+        id: check_api_doc
+        uses: andstor/file-existence-action@v3
+        with:
+          files: "build/apidoc"
+
+      - name: generate doc
+        run: |
+          if test -f "build/apidoc/openapi.json"; then
+            sudo npm install -g redoc-cli@0.13.2
+            redoc-cli bundle -o build/apidoc/docs-${{PROJECT_VERSION}}.html build/apidoc/openapi.json
+            cp build/apidoc/openapi.json build/apidoc/docs-${PROJECT_VERSION}.json
+          fi
+        shell: bash
+        if: steps.check_api_doc.outputs.files_exists == 'true'
+
+      - name: publish docs
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          branch: gh-pages
+          folder: build/apidoc
+          target-folder: ${{env.PUB_DIR}}
+          clean: false
+        if: steps.check_api_doc.outputs.files_exists == 'true'
