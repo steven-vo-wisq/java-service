@@ -57,7 +57,7 @@ jobs:
         continue-on-error: false
         uses: tvdias/github-tagger@v0.0.1
         with:
-          repo-token: ${{ inputs.github_token }}
+          repo-token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
           tag: ${{env.PROJECT_VERSION}}
         if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/hotfix') ) }}
 
