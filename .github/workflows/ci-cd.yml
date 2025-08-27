@@ -49,16 +49,15 @@ jobs:
       - name: set project version var
         shell: bash
         run: |
-          echo "PROJECT_VERSION=$(./gradlew properties -q | grep "^version:" | awk '{print $2}')" >> $GITHUB_ENV
+          echo "PROJECT_VERSION=$(grep -m 1 "^version\s*=" build.gradle | sed "s/version\s*=\s*[\'\"]\(.*\)[\'\"]/\1/") >> $GITHUB_ENV
 
       # Create git tag when merged to main OR to a branch prefixed with 'hotfix'
       - name: tag
-        # fail the build when trying to publish duplicate tag
         continue-on-error: false
         uses: tvdias/github-tagger@v0.0.1
         with:
           repo-token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-          tag: ${{env.PROJECT_VERSION}}
+          tag: ${{ env.PROJECT_VERSION }}
         if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/hotfix') ) }}
 
       - name: Check for existence of api docs
@@ -71,8 +70,8 @@ jobs:
         run: |
           if test -f "build/apidoc/openapi.json"; then
             sudo npm install -g redoc-cli@0.13.2
-            redoc-cli bundle -o build/apidoc/docs-${{env.PROJECT_VERSION}}.html build/apidoc/openapi.json
-            cp build/apidoc/openapi.json build/apidoc/docs-${{env.PROJECT_VERSION}}.json
+            redoc-cli bundle -o build/apidoc/docs-${{ env.PROJECT_VERSION }}.html build/apidoc/openapi.json
+            cp build/apidoc/openapi.json build/apidoc/docs-${{ env.PROJECT_VERSION }}.json
           fi
         shell: bash
         if: steps.check_api_doc.outputs.files_exists == 'true'
